@@ -1,12 +1,25 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { NavLink, Route, Routes } from 'react-router-dom';
+import { NavLink, Route, Routes, useLocation } from 'react-router-dom';
 
 type SummaryCard = { label: string; value: string };
 type DashboardPayload = {
   summary: SummaryCard[];
   charts: Array<{ label: string; points: number[] }>;
   logs: Array<{ level: string; message: string; source: string }>;
+  // US03 : indicateurs deja calcules par le serveur (plus besoin de charger tous les dossiers).
+  statusSummary: Array<{ key: string; count: number }>;
+  teamSummary: Array<Omit<TeamSnapshot, 'label'>>;
+  urgentRecords: UrgentRecord[];
   generatedAt: string;
+};
+type UrgentRecord = {
+  id: string;
+  team: string;
+  owner: string;
+  status: string;
+  score: number;
+  notes: string;
+  historyCount: number;
 };
 type RecordRow = {
   id: string;
@@ -83,7 +96,7 @@ function formatDateTime(value: string) {
   }).format(new Date(value));
 }
 
-function formatRecordId(record: RecordRow, index: number) {
+function formatRecordId(record: { team: string }, index: number) {
   return record.team.slice(0, 3).toUpperCase() + '-' + String(index + 1204).padStart(4, '0');
 }
 
@@ -157,7 +170,7 @@ function DashboardPage({
   dashboard: DashboardPayload;
   statusSummary: StatusSnapshot[];
   teamSummary: TeamSnapshot[];
-  urgentRecords: RecordRow[];
+  urgentRecords: UrgentRecord[];
 }) {
   return (
     <div className="ops-stack">
@@ -279,7 +292,7 @@ function DashboardPage({
                     <span className={'ops-status-pill ' + meta.tone}>{meta.label}</span>
                   </div>
                   <p>{teamLabel(record.team)} · {record.owner}</p>
-                  <small>{record.notes.slice(0, 118)}...</small>
+                  <small>{record.notes}...</small>
                 </article>
               );
             })}
@@ -404,7 +417,7 @@ function AnalyticsPage({
 }: {
   analytics: AnalyticsPayload;
   teamSummary: TeamSnapshot[];
-  urgentRecords: RecordRow[];
+  urgentRecords: UrgentRecord[];
 }) {
   return (
     <div className="ops-stack">
@@ -497,7 +510,7 @@ function AnalyticsPage({
                   <strong>{formatRecordId(record, index)}</strong>
                   <span>{teamLabel(record.team)}</span>
                 </div>
-                <small>{record.history.length} evenement(s) · {record.score} pts</small>
+                <small>{record.historyCount} evenement(s) · {record.score} pts</small>
               </article>
             ))}
           </div>
@@ -587,100 +600,77 @@ function SettingsPage({ settings }: { settings: SettingsPayload }) {
 }
 
 export default function OpsApp() {
+  const location = useLocation();
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
-  const [records, setRecords] = useState<RecordRow[]>([]);
+  // US03 : null = pas encore charge. Ces donnees ne sont recuperees qu'a l'ouverture de leur page.
+  const [records, setRecords] = useState<RecordRow[] | null>(null);
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsPayload | null>(null);
   // US02 : on memorise l'heure du dernier chargement et l'etat "en cours" pour le bouton manuel.
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // US02 : loadAll est sorti du useEffect et memorise avec useCallback,
-  // pour pouvoir etre rappele a la demande par le bouton "Rafraichir".
-  const loadAll = useCallback(() => {
-    setIsRefreshing(true);
-    Promise.all([
-      fetchJson<DashboardPayload>('/api/dashboard'),
-      fetchJson<RecordRow[]>('/api/records'),
-      fetchJson<SettingsPayload>('/api/settings'),
-      fetchJson<AnalyticsPayload>('/api/analytics')
-    ])
-      .then(([dashboardPayload, recordPayload, settingsPayload, analyticsPayload]) => {
-        setDashboard(dashboardPayload);
-        setRecords(recordPayload);
-        setSettings(settingsPayload);
-        setAnalytics(analyticsPayload);
-        setLastUpdated(new Date());
-      })
-      .finally(() => setIsRefreshing(false));
+  // US03 : avant, loadAll chargeait 4 endpoints au demarrage (dont les 180 dossiers complets).
+  // Desormais le demarrage ne charge que /api/dashboard ; chaque page charge ses propres donnees.
+  const loadDashboard = useCallback(
+    () => fetchJson<DashboardPayload>('/api/dashboard').then(setDashboard),
+    []
+  );
+
+  const loadPageData = useCallback((pathname: string) => {
+    if (pathname === '/table') return fetchJson<RecordRow[]>('/api/records').then(setRecords);
+    if (pathname === '/analytics') return fetchJson<AnalyticsPayload>('/api/analytics').then(setAnalytics);
+    if (pathname === '/settings') return fetchJson<SettingsPayload>('/api/settings').then(setSettings);
+    return Promise.resolve();
   }, []);
+
+  // US02 : rafraichissement manuel. US03 : il ne recharge que le tableau de bord et la page courante.
+  const refresh = useCallback(() => {
+    setIsRefreshing(true);
+    Promise.all([loadDashboard(), loadPageData(location.pathname)])
+      .then(() => setLastUpdated(new Date()))
+      .finally(() => setIsRefreshing(false));
+  }, [loadDashboard, loadPageData, location.pathname]);
 
   // US02 : un seul chargement au montage. On a SUPPRIME le window.setInterval(loadAll, 5000)
   // qui rechargeait les 4 endpoints toutes les 5 secondes (requetes reseau repetees et inutiles).
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    loadDashboard().then(() => setLastUpdated(new Date()));
+  }, [loadDashboard]);
+
+  // US03 : chargement a la demande, la premiere fois qu'une page est ouverte.
+  useEffect(() => {
+    const isMissing =
+      (location.pathname === '/table' && records === null) ||
+      (location.pathname === '/analytics' && analytics === null) ||
+      (location.pathname === '/settings' && settings === null);
+    if (isMissing) {
+      loadPageData(location.pathname);
+    }
+  }, [location.pathname, records, analytics, settings, loadPageData]);
 
   const statusSummary = useMemo<StatusSnapshot[]>(() => {
-    const counts = records.reduce<Record<string, number>>((accumulator, record) => {
-      accumulator[record.status] = (accumulator[record.status] ?? 0) + 1;
-      return accumulator;
-    }, {});
-
-    return Object.keys(STATUS_META).map((key) => ({
-      key,
-      label: STATUS_META[key].label,
-      tone: STATUS_META[key].tone,
-      count: counts[key] ?? 0
+    return (dashboard?.statusSummary ?? []).map((item) => ({
+      key: item.key,
+      label: statusInfo(item.key).label,
+      tone: statusInfo(item.key).tone,
+      count: item.count
     }));
-  }, [records]);
+  }, [dashboard]);
 
   const teamSummary = useMemo<TeamSnapshot[]>(() => {
-    const buckets = records.reduce<
-      Record<string, { total: number; scoreTotal: number; warningCount: number; reviewCount: number }>
-    >((accumulator, record) => {
-      if (!accumulator[record.team]) {
-        accumulator[record.team] = { total: 0, scoreTotal: 0, warningCount: 0, reviewCount: 0 };
-      }
+    return (dashboard?.teamSummary ?? []).map((team) => ({ ...team, label: teamLabel(team.key) }));
+  }, [dashboard]);
 
-      accumulator[record.team].total += 1;
-      accumulator[record.team].scoreTotal += record.score;
-      if (record.status === 'warning') {
-        accumulator[record.team].warningCount += 1;
-      }
-      if (record.status === 'review') {
-        accumulator[record.team].reviewCount += 1;
-      }
-
-      return accumulator;
-    }, {});
-
-    return Object.entries(buckets)
-      .map(([key, bucket]) => ({
-        key,
-        label: teamLabel(key),
-        total: bucket.total,
-        average: Math.round(bucket.scoreTotal / bucket.total),
-        warningCount: bucket.warningCount,
-        reviewCount: bucket.reviewCount
-      }))
-      .sort((left, right) => right.average - left.average);
-  }, [records]);
-
-  const urgentRecords = useMemo(() => {
-    return [...records]
-      .filter((record) => record.status !== 'ok' || record.score >= 70)
-      .sort((left, right) => right.score + right.history.length * 4 - (left.score + left.history.length * 4))
-      .slice(0, 6);
-  }, [records]);
-
-  if (!dashboard || !settings || !analytics) {
+  if (!dashboard) {
     return <main className="ops-loading-shell"><p>Chargement du cockpit...</p></main>;
   }
 
+  const pageLoading = <div className="ops-stack"><p>Chargement...</p></div>;
+
   return (
     <div className="ops-app">
-      <Sidebar onRefresh={loadAll} lastUpdated={lastUpdated} isRefreshing={isRefreshing} />
+      <Sidebar onRefresh={refresh} lastUpdated={lastUpdated} isRefreshing={isRefreshing} />
       <main className="ops-content">
         <Routes>
           <Route
@@ -690,16 +680,22 @@ export default function OpsApp() {
                 dashboard={dashboard}
                 statusSummary={statusSummary}
                 teamSummary={teamSummary}
-                urgentRecords={urgentRecords}
+                urgentRecords={dashboard.urgentRecords}
               />
             }
           />
-          <Route path="/table" element={<TablePage records={records} />} />
+          <Route path="/table" element={records ? <TablePage records={records} /> : pageLoading} />
           <Route
             path="/analytics"
-            element={<AnalyticsPage analytics={analytics} teamSummary={teamSummary} urgentRecords={urgentRecords} />}
+            element={
+              analytics ? (
+                <AnalyticsPage analytics={analytics} teamSummary={teamSummary} urgentRecords={dashboard.urgentRecords} />
+              ) : (
+                pageLoading
+              )
+            }
           />
-          <Route path="/settings" element={<SettingsPage settings={settings} />} />
+          <Route path="/settings" element={settings ? <SettingsPage settings={settings} /> : pageLoading} />
         </Routes>
       </main>
     </div>

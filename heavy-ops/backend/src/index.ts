@@ -28,12 +28,69 @@ app.post('/api/session', (_req, res) => {
   res.json({ token: 'training-session', user: 'eco-learner', expiresIn: 3600 });
 });
 
+type RecordRow = {
+  id: string;
+  team: string;
+  owner: string;
+  status: string;
+  score: number;
+  notes: string;
+  history: Array<{ timestamp: string; message: string }>;
+};
+
+// US03 : les indicateurs du tableau de bord (statuts, equipes, points chauds) sont calcules ici,
+// pour que le front n'ait plus a telecharger les 180 dossiers complets au premier affichage.
+function buildRecordSummaries(records: RecordRow[]) {
+  const statusSummary = ['ok', 'warning', 'review'].map((status) => ({
+    key: status,
+    count: records.filter((record) => record.status === status).length
+  }));
+
+  const buckets: Record<string, { total: number; scoreTotal: number; warningCount: number; reviewCount: number }> = {};
+  for (const record of records) {
+    const bucket = (buckets[record.team] ??= { total: 0, scoreTotal: 0, warningCount: 0, reviewCount: 0 });
+    bucket.total += 1;
+    bucket.scoreTotal += record.score;
+    if (record.status === 'warning') bucket.warningCount += 1;
+    if (record.status === 'review') bucket.reviewCount += 1;
+  }
+  const teamSummary = Object.entries(buckets)
+    .map(([key, bucket]) => ({
+      key,
+      total: bucket.total,
+      average: Math.round(bucket.scoreTotal / bucket.total),
+      warningCount: bucket.warningCount,
+      reviewCount: bucket.reviewCount
+    }))
+    .sort((left, right) => right.average - left.average);
+
+  // On n'envoie que les champs affiches (notes tronquees, nombre d'evenements au lieu de l'historique).
+  const urgentRecords = [...records]
+    .filter((record) => record.status !== 'ok' || record.score >= 70)
+    .sort((left, right) => right.score + right.history.length * 4 - (left.score + left.history.length * 4))
+    .slice(0, 6)
+    .map((record) => ({
+      id: record.id,
+      team: record.team,
+      owner: record.owner,
+      status: record.status,
+      score: record.score,
+      notes: record.notes.slice(0, 118),
+      historyCount: record.history.length
+    }));
+
+  return { statusSummary, teamSummary, urgentRecords };
+}
+
 app.get('/api/dashboard', (_req, res) => {
   const analytics = readJson('data/analytics.json');
+  const records: RecordRow[] = readJson('data/records.json');
   res.json({
     summary: analytics.summary,
-    charts: analytics.charts,
-    logs: analytics.logs.slice(0, 20),
+    // US03 : uniquement ce que la vue affiche (4 graphiques sur 16, 6 evenements du journal sur 20).
+    charts: analytics.charts.slice(0, 4),
+    logs: analytics.logs.slice(0, 6),
+    ...buildRecordSummaries(records),
     generatedAt: new Date().toISOString()
   });
 });
