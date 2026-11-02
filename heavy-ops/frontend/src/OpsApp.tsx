@@ -31,6 +31,15 @@ type RecordRow = {
   notes: string;
   history: Array<{ timestamp: string; message: string }>;
 };
+// US04 : la liste ne contient plus les notes ni l'historique, charges a l'ouverture d'un dossier.
+type RecordSummary = Omit<RecordRow, 'notes' | 'history'>;
+type RecordPage = {
+  items: RecordSummary[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+};
 type SettingsPayload = {
   pollingMs: number;
   autoRefresh: boolean;
@@ -303,17 +312,40 @@ function DashboardPage({
   );
 }
 
-function TablePage({ records }: { records: RecordRow[] }) {
-  const [selectedId, setSelectedId] = useState(records[0]?.id ?? '');
+const RECORDS_PAGE_SIZE = 10;
+
+// US04 : la page charge elle-meme une page de dossiers (10 au lieu des 180 complets),
+// puis le detail (notes + historique) uniquement du dossier ouvert.
+function TablePage({ refreshKey }: { refreshKey: number }) {
+  const [page, setPage] = useState(1);
+  const [recordPage, setRecordPage] = useState<RecordPage | null>(null);
+  const [selectedId, setSelectedId] = useState('');
+  const [selectedRecord, setSelectedRecord] = useState<RecordRow | null>(null);
 
   useEffect(() => {
-    if (!records.some((record) => record.id === selectedId)) {
-      setSelectedId(records[0]?.id ?? '');
-    }
-  }, [records, selectedId]);
+    fetchJson<RecordPage>('/api/records?page=' + page + '&pageSize=' + RECORDS_PAGE_SIZE).then((payload) => {
+      setRecordPage(payload);
+      setSelectedId((current) =>
+        payload.items.some((record) => record.id === current) ? current : payload.items[0]?.id ?? ''
+      );
+    });
+  }, [page, refreshKey]);
 
-  const selectedIndex = records.findIndex((record) => record.id === selectedId);
-  const selectedRecord = selectedIndex >= 0 ? records[selectedIndex] : records[0];
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedRecord(null);
+      return;
+    }
+    fetchJson<RecordRow>('/api/records/' + selectedId).then(setSelectedRecord);
+  }, [selectedId, refreshKey]);
+
+  if (!recordPage) {
+    return <div className="ops-stack"><p>Chargement...</p></div>;
+  }
+
+  const records = recordPage.items;
+  const offset = (recordPage.page - 1) * recordPage.pageSize;
+  const selectedIndex = records.findIndex((record) => record.id === selectedRecord?.id);
 
   return (
     <div className="ops-stack">
@@ -327,9 +359,9 @@ function TablePage({ records }: { records: RecordRow[] }) {
 
       <section className="ops-records-grid">
         <article className="ops-panel ops-record-list">
-          {records.slice(0, 18).map((record, index) => {
+          {records.map((record, index) => {
             const meta = statusInfo(record.status);
-            const isSelected = record.id === selectedRecord?.id;
+            const isSelected = record.id === selectedId;
             return (
               <button
                 key={record.id}
@@ -338,7 +370,7 @@ function TablePage({ records }: { records: RecordRow[] }) {
                 onClick={() => setSelectedId(record.id)}
               >
                 <div className="ops-card-header">
-                  <strong>{formatRecordId(record, index)}</strong>
+                  <strong>{formatRecordId(record, offset + index)}</strong>
                   <span className={'ops-status-pill ' + meta.tone}>{meta.label}</span>
                 </div>
                 <div className="ops-record-meta">
@@ -352,6 +384,26 @@ function TablePage({ records }: { records: RecordRow[] }) {
               </button>
             );
           })}
+
+          <div className="ops-pagination">
+            <button
+              type="button"
+              className="ops-pagination-button"
+              disabled={recordPage.page <= 1}
+              onClick={() => setPage(recordPage.page - 1)}
+            >
+              Precedent
+            </button>
+            <span>Page {recordPage.page} / {recordPage.totalPages}</span>
+            <button
+              type="button"
+              className="ops-pagination-button"
+              disabled={recordPage.page >= recordPage.totalPages}
+              onClick={() => setPage(recordPage.page + 1)}
+            >
+              Suivant
+            </button>
+          </div>
         </article>
 
         <aside className="ops-panel ops-record-detail">
@@ -360,7 +412,7 @@ function TablePage({ records }: { records: RecordRow[] }) {
               <div className="ops-section-header">
                 <div>
                   <p className="ops-eyebrow">Detail</p>
-                  <h2>{formatRecordId(selectedRecord, Math.max(selectedIndex, 0))}</h2>
+                  <h2>{formatRecordId(selectedRecord, offset + Math.max(selectedIndex, 0))}</h2>
                 </div>
                 <span className={'ops-status-pill ' + statusInfo(selectedRecord.status).tone}>
                   {statusInfo(selectedRecord.status).label}
@@ -403,7 +455,9 @@ function TablePage({ records }: { records: RecordRow[] }) {
                 </div>
               </article>
             </>
-          ) : null}
+          ) : (
+            <p>Chargement du dossier...</p>
+          )}
         </aside>
       </section>
     </div>
@@ -603,12 +657,14 @@ export default function OpsApp() {
   const location = useLocation();
   const [dashboard, setDashboard] = useState<DashboardPayload | null>(null);
   // US03 : null = pas encore charge. Ces donnees ne sont recuperees qu'a l'ouverture de leur page.
-  const [records, setRecords] = useState<RecordRow[] | null>(null);
+  // US04 : les dossiers sont charges par la page Dossiers elle-meme (pagination + detail a la demande).
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [analytics, setAnalytics] = useState<AnalyticsPayload | null>(null);
   // US02 : on memorise l'heure du dernier chargement et l'etat "en cours" pour le bouton manuel.
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  // US04 : incremente par le bouton "Rafraichir" pour que la page Dossiers recharge sa page courante.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // US03 : avant, loadAll chargeait 4 endpoints au demarrage (dont les 180 dossiers complets).
   // Desormais le demarrage ne charge que /api/dashboard ; chaque page charge ses propres donnees.
@@ -618,7 +674,6 @@ export default function OpsApp() {
   );
 
   const loadPageData = useCallback((pathname: string) => {
-    if (pathname === '/table') return fetchJson<RecordRow[]>('/api/records').then(setRecords);
     if (pathname === '/analytics') return fetchJson<AnalyticsPayload>('/api/analytics').then(setAnalytics);
     if (pathname === '/settings') return fetchJson<SettingsPayload>('/api/settings').then(setSettings);
     return Promise.resolve();
@@ -627,6 +682,7 @@ export default function OpsApp() {
   // US02 : rafraichissement manuel. US03 : il ne recharge que le tableau de bord et la page courante.
   const refresh = useCallback(() => {
     setIsRefreshing(true);
+    setRefreshKey((key) => key + 1);
     Promise.all([loadDashboard(), loadPageData(location.pathname)])
       .then(() => setLastUpdated(new Date()))
       .finally(() => setIsRefreshing(false));
@@ -641,13 +697,12 @@ export default function OpsApp() {
   // US03 : chargement a la demande, la premiere fois qu'une page est ouverte.
   useEffect(() => {
     const isMissing =
-      (location.pathname === '/table' && records === null) ||
       (location.pathname === '/analytics' && analytics === null) ||
       (location.pathname === '/settings' && settings === null);
     if (isMissing) {
       loadPageData(location.pathname);
     }
-  }, [location.pathname, records, analytics, settings, loadPageData]);
+  }, [location.pathname, analytics, settings, loadPageData]);
 
   const statusSummary = useMemo<StatusSnapshot[]>(() => {
     return (dashboard?.statusSummary ?? []).map((item) => ({
@@ -684,7 +739,7 @@ export default function OpsApp() {
               />
             }
           />
-          <Route path="/table" element={records ? <TablePage records={records} /> : pageLoading} />
+          <Route path="/table" element={<TablePage refreshKey={refreshKey} />} />
           <Route
             path="/analytics"
             element={

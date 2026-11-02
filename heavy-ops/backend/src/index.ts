@@ -34,6 +34,7 @@ type RecordRow = {
   owner: string;
   status: string;
   score: number;
+  createdAt: string;
   notes: string;
   history: Array<{ timestamp: string; message: string }>;
 };
@@ -95,8 +96,27 @@ app.get('/api/dashboard', (_req, res) => {
   });
 });
 
-app.get('/api/records', (_req, res) => {
-  res.json(readJson('data/records.json'));
+// US04 : liste paginee et allegee. Les notes et l'historique ne sont plus envoyes dans la liste,
+// ils sont servis par /api/records/:id a l'ouverture d'un dossier.
+app.get('/api/records', (req, res) => {
+  const records: RecordRow[] = readJson('data/records.json');
+  const pageSize = Math.min(Math.max(Number(req.query.pageSize) || 10, 1), 50);
+  const totalPages = Math.max(Math.ceil(records.length / pageSize), 1);
+  const page = Math.min(Math.max(Number(req.query.page) || 1, 1), totalPages);
+  const items = records
+    .slice((page - 1) * pageSize, page * pageSize)
+    .map(({ notes, history, ...summary }) => summary);
+  res.json({ items, page, pageSize, total: records.length, totalPages });
+});
+
+app.get('/api/records/:id', (req, res) => {
+  const records: RecordRow[] = readJson('data/records.json');
+  const record = records.find((item) => item.id === req.params.id);
+  if (!record) {
+    res.status(404).json({ error: 'Dossier introuvable' });
+    return;
+  }
+  res.json(record);
 });
 
 app.get('/api/analytics', (_req, res) => {

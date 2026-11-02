@@ -548,3 +548,27 @@ a {
 .ops-refresh-meta {
   color: var(--ops-muted);
 }
+
+/* US04 : pagination de la liste des dossiers */
+.ops-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ops-muted);
+}
+
+.ops-pagination-button {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: none;
+  background: var(--ops-surface);
+  color: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ops-pagination-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
