@@ -24,9 +24,10 @@ export default defineConfig({
     port: 4173,
     strictPort: true,
     allowedHosts: ['.trycloudflare.com'],
+    // Pas de proxy '/assets' ici : le build place son JS et son CSS dans /assets,
+    // les rediriger vers le backend les rendait introuvables (page blanche).
     proxy: {
-      '/api': 'http://localhost:4100',
-      '/assets': 'http://localhost:4100'
+      '/api': 'http://localhost:4100'
     }
   }
 });
